@@ -1,9 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getTeam, getLastFive, parseScore, isFinished } from "@/lib/highlightly";
+import {
+  getTeam,
+  getLastFive,
+  getTeamTablePosition,
+  getLeaguePhaseMatches,
+  parseScore,
+  isFinished,
+  isLive
+} from "@/lib/highlightly";
 import MatchRow from "@/app/components/MatchRow";
 
-export const revalidate = 300;
+export const revalidate = 21600;
 
 export default async function TeamPage({
   params
@@ -13,13 +21,26 @@ export default async function TeamPage({
   const id = Number(params.id);
   if (!Number.isFinite(id)) notFound();
 
-  const [team, form] = await Promise.all([getTeam(id), getLastFive(id)]);
+  const [team, form, tablePos, allMatches] = await Promise.all([
+    getTeam(id),
+    getLastFive(id),
+    getTeamTablePosition(id),
+    getLeaguePhaseMatches().catch(() => [])
+  ]);
   if (!team) notFound();
 
   const finished = form.filter((m) => isFinished(m.state.description));
+  const nextFixture = allMatches
+    .filter(
+      (m) =>
+        (m.homeTeam.id === id || m.awayTeam.id === id) &&
+        !isFinished(m.state.description) &&
+        !isLive(m.state.description)
+    )
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
 
   return (
-    <div className="page wrap">
+    <div className="page wrap page--with-mobile-nav">
       <div className="page__heading">
         <h1 className="team-page__title">
           {team.logo && (
@@ -32,6 +53,30 @@ export default async function TeamPage({
           ← Standings
         </Link>
       </div>
+
+      {tablePos && (
+        <div className="team-meta">
+          <div className="team-meta__item">
+            <span className="team-meta__label">Position</span>
+            <span className="team-meta__value">{tablePos.position}</span>
+          </div>
+          <div className="team-meta__item">
+            <span className="team-meta__label">Points</span>
+            <span className="team-meta__value">{tablePos.points}</span>
+          </div>
+          <div className="team-meta__item">
+            <span className="team-meta__label">Played</span>
+            <span className="team-meta__value">{tablePos.played}</span>
+          </div>
+        </div>
+      )}
+
+      {nextFixture && (
+        <section className="matchday">
+          <div className="matchday__label">Next fixture</div>
+          <MatchRow match={nextFixture} />
+        </section>
+      )}
 
       <section className="matchday">
         <div className="matchday__label">Recent form</div>
@@ -55,7 +100,11 @@ export default async function TeamPage({
           return (
             <div key={m.id} className="form-row">
               {result && (
-                <span className={`form-badge form-badge--${result.toLowerCase()}`}>{result}</span>
+                <span
+                  className={`form-badge form-badge--${result.toLowerCase()}`}
+                >
+                  {result}
+                </span>
               )}
               <div className="form-row__match">
                 <MatchRow match={m} />

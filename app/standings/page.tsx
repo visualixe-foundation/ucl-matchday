@@ -1,9 +1,22 @@
-import { getStandings, sortStandings, type StandingRow } from "@/lib/highlightly";
+import {
+  getStandings,
+  sortStandings,
+  qualificationZone,
+  type StandingRow
+} from "@/lib/highlightly";
 
-export const revalidate = 86400; // 24 hours
+export const revalidate = 86400;
 
 function gd(row: StandingRow) {
   return row.total.scoredGoals - row.total.receivedGoals;
+}
+
+function zoneClass(pos: number): string {
+  const z = qualificationZone(pos);
+  if (z === "r16") return "standings-row--r16";
+  if (z === "playoff") return "standings-row--playoff";
+  if (z === "out") return "standings-row--out";
+  return "";
 }
 
 export default async function StandingsPage() {
@@ -29,10 +42,24 @@ export default async function StandingsPage() {
     errorMessage?.toLowerCase().includes("daily request");
 
   return (
-    <div className="page wrap">
+    <div className="page wrap page--with-mobile-nav">
       <div className="page__heading">
         <h1>Standings</h1>
       </div>
+
+      {!errorMessage && groups.length > 0 && (
+        <div className="standings-legend">
+          <span className="standings-legend__item standings-legend__item--r16">
+            1–8 Round of 16
+          </span>
+          <span className="standings-legend__item standings-legend__item--playoff">
+            9–24 Playoff
+          </span>
+          <span className="standings-legend__item standings-legend__item--out">
+            25–36 Out
+          </span>
+        </div>
+      )}
 
       {errorMessage && (
         <div className="empty-state">
@@ -71,7 +98,7 @@ export default async function StandingsPage() {
               </thead>
               <tbody>
                 {group.standings.map((row) => (
-                  <tr key={row.team.id}>
+                  <tr key={row.team.id} className={zoneClass(row.position)}>
                     <td className="standings-table__pos">{row.position}</td>
                     <td>
                       <a

@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Oswald, Inter } from "next/font/google";
 import "./globals.css";
+import MobileNav from "./components/MobileNav";
 
 const oswald = Oswald({
   subsets: ["latin"],
@@ -15,8 +16,38 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Matchday — UEFA Champions League",
-  description: "Fixtures, live scores, standings and highlights for the Champions League."
+  title: {
+    default: "Matchday — UEFA Champions League",
+    template: "%s · Matchday"
+  },
+  description:
+    "Fixtures, live scores, standings, lineups and highlights for the UEFA Champions League.",
+  applicationName: "UCL Matchday",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "UCL Matchday"
+  },
+  openGraph: {
+    title: "Matchday — UEFA Champions League",
+    description:
+      "Fixtures, live scores, standings and highlights for the Champions League.",
+    siteName: "UCL Matchday",
+    type: "website"
+  },
+  twitter: {
+    card: "summary",
+    title: "Matchday — UEFA Champions League",
+    description:
+      "Fixtures, live scores, standings and highlights for the Champions League."
+  }
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0b1f17",
+  width: "device-width",
+  initialScale: 1
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -56,6 +87,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </p>
           </div>
         </footer>
+        <MobileNav />
       </body>
     </html>
   );
