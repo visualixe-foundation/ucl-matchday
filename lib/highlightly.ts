@@ -1,6 +1,5 @@
 // Thin wrapper around the Highlightly Football API (UEFA Champions League).
-//
-// Free tier = 100 req/day. Prefer known matchday dates over scanning every day.
+// Free tier = 100 req/day — cache aggressively; prefer known matchday dates.
 
 const SOURCE = process.env.HIGHLIGHTLY_SOURCE === "rapidapi" ? "rapidapi" : "direct";
 const API_KEY = process.env.HIGHLIGHTLY_API_KEY;
@@ -11,40 +10,29 @@ const BASE_URL =
     ? "https://football-highlights-api.p.rapidapi.com"
     : "https://soccer.highlightly.net";
 
-const REVALIDATE_MATCHES = 6 * 60 * 60; // 6 hours
+const REVALIDATE_MATCHES = 6 * 60 * 60;
 const REVALIDATE_MATCH = 60 * 60;
-const REVALIDATE_LINEUPS = 24 * 60 * 60; // 24 hours — lineups don't change after the match
+const REVALIDATE_MATCH_LIVE = 60; // 1 min when live
+const REVALIDATE_LINEUPS = 24 * 60 * 60;
+const REVALIDATE_STATS = 6 * 60 * 60;
+const REVALIDATE_H2H = 24 * 60 * 60;
 const REVALIDATE_STANDINGS = 24 * 60 * 60;
 const REVALIDATE_HIGHLIGHTS = 12 * 60 * 60;
 const REVALIDATE_TEAM = 24 * 60 * 60;
 
-/** 2026/27 UCL league-phase matchday dates (from UEFA schedule). */
-const UCL_MATCHDAY_DATES: string[] = [
-  // Matchday 1
-  "2026-09-08",
-  "2026-09-09",
-  "2026-09-10",
-  // Matchday 2
-  "2026-10-13",
-  "2026-10-14",
-  // Matchday 3
-  "2026-10-20",
-  "2026-10-21",
-  // Matchday 4
-  "2026-11-03",
-  "2026-11-04",
-  // Matchday 5
-  "2026-11-24",
-  "2026-11-25",
-  // Matchday 6
-  "2026-12-08",
-  "2026-12-09",
-  // Matchday 7
-  "2027-01-19",
-  "2027-01-20",
-  // Matchday 8
-  "2027-01-27"
+/** 2026/27 UCL league-phase matchday date clusters. */
+export const UCL_MATCHDAY_CLUSTERS: { label: string; dates: string[] }[] = [
+  { label: "Matchday 1", dates: ["2026-09-08", "2026-09-09", "2026-09-10"] },
+  { label: "Matchday 2", dates: ["2026-10-13", "2026-10-14"] },
+  { label: "Matchday 3", dates: ["2026-10-20", "2026-10-21"] },
+  { label: "Matchday 4", dates: ["2026-11-03", "2026-11-04"] },
+  { label: "Matchday 5", dates: ["2026-11-24", "2026-11-25"] },
+  { label: "Matchday 6", dates: ["2026-12-08", "2026-12-09"] },
+  { label: "Matchday 7", dates: ["2027-01-19", "2027-01-20"] },
+  { label: "Matchday 8", dates: ["2027-01-27"] }
 ];
+
+const UCL_MATCHDAY_DATES = UCL_MATCHDAY_CLUSTERS.flatMap((c) => c.dates);
 
 function headers(): HeadersInit {
   if (!API_KEY) {
@@ -52,9 +40,7 @@ function headers(): HeadersInit {
       "Missing HIGHLIGHTLY_API_KEY. Add it to .env.local (see .env.local.example)."
     );
   }
-  const h: HeadersInit = {
-    "x-rapidapi-key": API_KEY
-  };
+  const h: HeadersInit = { "x-rapidapi-key": API_KEY };
   if (SOURCE === "rapidapi") {
     h["x-rapidapi-host"] = "football-highlights-api.p.rapidapi.com";
   }
@@ -70,12 +56,10 @@ async function get<T>(
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
-
   const res = await fetch(url.toString(), {
     headers: headers(),
     next: { revalidate }
   });
-
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Highlightly ${path} failed: ${res.status} ${body}`);
@@ -98,6 +82,35 @@ export function addDaysUTC(base: Date, days: number): Date {
   const d = new Date(base);
   d.setUTCDate(d.getUTCDate() + days);
   return d;
+}
+
+export function formatMatchdayRange(dates: string[]): string {
+  if (!dates.length) return "";
+  const fmt = (iso: string) =>
+    new Date(iso + "T12:00:00.000Z").toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      timeZone: "Africa/Nairobi"
+    });
+  if (dates.length === 1) return fmt(dates[0]);
+  return `${fmt(dates[0])} – ${fmt(dates[dates.length - 1])}`;
+}
+
+export function getLastAndNextClusters(today = new Date().toISOString().slice(0, 10)) {
+  let last: (typeof UCL_MATCHDAY_CLUSTERS)[0] | null = null;
+  let next: (typeof UCL_MATCHDAY_CLUSTERS)[0] | null = null;
+  for (const c of UCL_MATCHDAY_CLUSTERS) {
+    const end = c.dates[c.dates.length - 1];
+    if (end < today) last = c;
+    else if (!next && c.dates[0] >= today) next = c;
+    else if (!next && c.dates.some((d) => d >= today)) next = c;
+  }
+  // If today is inside a cluster, treat it as current/next
+  const current = UCL_MATCHDAY_CLUSTERS.find((c) =>
+    c.dates.some((d) => d === today)
+  );
+  if (current) next = current;
+  return { last, next };
 }
 
 type Team = {
@@ -161,7 +174,6 @@ export type LineupSide = {
   logo?: string;
   name: string;
   formation?: string;
-  /** Rows of players; first row is always the goalkeeper. */
   initialLineup?: LineupPlayer[][];
   substitutes?: LineupPlayer[];
 };
@@ -169,6 +181,17 @@ export type LineupSide = {
 export type MatchLineups = {
   homeTeam?: LineupSide;
   awayTeam?: LineupSide;
+};
+
+export type StatItem = {
+  value: number | string;
+  displayName?: string;
+  name?: string;
+};
+
+export type TeamStats = {
+  team: { id: number; name: string; logo?: string };
+  statistics: StatItem[];
 };
 
 export async function getMatches(date?: string): Promise<Match[]> {
@@ -187,21 +210,17 @@ export async function getMatches(date?: string): Promise<Match[]> {
   return Array.isArray(data) ? data : data.data ?? [];
 }
 
-/**
- * Last completed + next upcoming league-phase matchday clusters only.
- */
 export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const today = new Date().toISOString().slice(0, 10);
-
-  const past = UCL_MATCHDAY_DATES.filter((d) => d <= today).slice(-4);
-  const upcoming = UCL_MATCHDAY_DATES.filter((d) => d > today).slice(0, 4);
-  const dates = Array.from(new Set([...past, ...upcoming]));
-
+  const { last, next } = getLastAndNextClusters(today);
+  const dates = [
+    ...(last?.dates ?? []),
+    ...(next?.dates ?? []),
+    ...UCL_MATCHDAY_DATES.filter((d) => d <= today).slice(-3)
+  ];
   const start = new Date(today + "T00:00:00.000Z");
-  for (let i = -1; i <= 2; i++) {
-    dates.push(isoDateUTC(addDaysUTC(start, i)));
-  }
+  for (let i = -1; i <= 2; i++) dates.push(isoDateUTC(addDaysUTC(start, i)));
   const unique = Array.from(new Set(dates)).sort();
 
   const results = await Promise.all(
@@ -216,39 +235,16 @@ export async function getLeaguePhaseMatches(): Promise<Match[]> {
   );
 }
 
-export async function getMatchesWindow(
-  startDate: string,
-  days = 3,
-  pastDays = 14
-): Promise<Match[]> {
-  if (!LEAGUE_ID) return [];
-  const start = new Date(startDate + "T00:00:00.000Z");
-  const back = Math.min(Math.max(pastDays, 0), 21);
-  const forward = Math.min(Math.max(days, 1), 7);
-  const offsets: number[] = [];
-  for (let i = -back; i < forward; i++) offsets.push(i);
-
-  const results = await Promise.all(
-    offsets.map((i) =>
-      getMatches(isoDateUTC(addDaysUTC(start, i))).catch(() => [] as Match[])
-    )
-  );
-  const byId = new Map<number, Match>();
-  for (const batch of results) {
-    for (const m of batch) byId.set(m.id, m);
-  }
-  return Array.from(byId.values()).sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-  );
-}
-
-export async function getMatchById(id: number): Promise<Match | null> {
+export async function getMatchById(
+  id: number,
+  live = false
+): Promise<Match | null> {
   if (!LEAGUE_ID) return null;
   try {
     const data = await get<Match | Match[] | { data?: Match }>(
       `/matches/${id}`,
       {},
-      REVALIDATE_MATCH
+      live ? REVALIDATE_MATCH_LIVE : REVALIDATE_MATCH
     );
     if (Array.isArray(data)) return data[0] ?? null;
     if (data && typeof data === "object" && "data" in data) {
@@ -260,18 +256,46 @@ export async function getMatchById(id: number): Promise<Match | null> {
   }
 }
 
-/** Starting XI + bench for one match. Returns null if unavailable. */
 export async function getLineups(matchId: number): Promise<MatchLineups | null> {
   try {
-    const data = await get<MatchLineups>(
-      `/lineups/${matchId}`,
-      {},
-      REVALIDATE_LINEUPS
-    );
+    const data = await get<MatchLineups>(`/lineups/${matchId}`, {}, REVALIDATE_LINEUPS);
     if (!data?.homeTeam && !data?.awayTeam) return null;
     return data;
   } catch {
     return null;
+  }
+}
+
+/** Team match stats — array of { team, statistics[] }. */
+export async function getMatchStatistics(
+  matchId: number
+): Promise<TeamStats[] | null> {
+  try {
+    const data = await get<TeamStats[] | { data?: TeamStats[] }>(
+      `/statistics/${matchId}`,
+      {},
+      REVALIDATE_STATS
+    );
+    const list = Array.isArray(data) ? data : data.data ?? [];
+    return list.length ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getHeadToHead(
+  teamIdOne: number,
+  teamIdTwo: number
+): Promise<Match[]> {
+  try {
+    const data = await get<Match[] | { data?: Match[] }>(
+      "/head-2-head",
+      { teamIdOne, teamIdTwo },
+      REVALIDATE_H2H
+    );
+    return Array.isArray(data) ? data : data.data ?? [];
+  } catch {
+    return [];
   }
 }
 
@@ -392,15 +416,42 @@ export function sortStandings(rows: StandingRow[]): StandingRow[] {
   });
 }
 
+/** UCL league phase: 1–8 auto R16, 9–24 playoff, 25–36 out. */
+export function qualificationZone(position: number): "r16" | "playoff" | "out" | null {
+  if (position <= 0) return null;
+  if (position <= 8) return "r16";
+  if (position <= 24) return "playoff";
+  return "out";
+}
+
 export async function getStandings(): Promise<Standings | null> {
   if (!LEAGUE_ID) return null;
   const data = await get<Standings>(
     "/standings",
-    {
-      leagueId: LEAGUE_ID,
-      season: currentSeason()
-    },
+    { leagueId: LEAGUE_ID, season: currentSeason() },
     REVALIDATE_STANDINGS
   );
   return data;
+}
+
+export async function getTeamTablePosition(
+  teamId: number
+): Promise<{ position: number; points: number; played: number } | null> {
+  try {
+    const data = await getStandings();
+    if (!data) return null;
+    for (const g of data.groups ?? []) {
+      const row = (g.standings ?? []).find((r) => r.team.id === teamId);
+      if (row) {
+        return {
+          position: row.position,
+          points: row.points,
+          played: row.total.games
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
