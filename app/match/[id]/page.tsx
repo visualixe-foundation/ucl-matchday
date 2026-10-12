@@ -1,16 +1,23 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 import {
   getMatchById,
   getLineups,
+  getMatchStatistics,
+  getHeadToHead,
   isLive,
   isFinished,
   parseScore,
   type MatchEvent,
   type LineupSide,
-  type LineupPlayer
+  type LineupPlayer,
+  type TeamStats,
+  type Match
 } from "@/lib/highlightly";
 import { formatKickoffDateTime } from "@/lib/time";
+import MatchRow from "@/app/components/MatchRow";
+import LiveRefresh from "@/app/components/LiveRefresh";
 
 export const revalidate = 3600;
 
@@ -160,7 +167,6 @@ function LineupBlock({ side, label }: { side: LineupSide; label: string }) {
           <span className="lineup-side__formation">{side.formation}</span>
         )}
       </div>
-
       {hasXi && (
         <div className="lineup-xi">
           {rows.map((row, ri) => (
@@ -174,7 +180,6 @@ function LineupBlock({ side, label }: { side: LineupSide; label: string }) {
           ))}
         </div>
       )}
-
       {bench.length > 0 && (
         <div className="lineup-bench">
           <div className="lineup-bench__label">Bench</div>
@@ -185,12 +190,123 @@ function LineupBlock({ side, label }: { side: LineupSide; label: string }) {
           </ul>
         </div>
       )}
-
       {!hasXi && bench.length === 0 && (
         <p className="lineup-empty">Lineup not available</p>
       )}
     </div>
   );
+}
+
+function statLabel(s: { displayName?: string; name?: string }) {
+  return s.displayName || s.name || "Stat";
+}
+
+function toNum(v: number | string): number {
+  if (typeof v === "number") return v;
+  const n = parseFloat(String(v).replace("%", ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function StatsBlock({
+  stats,
+  homeId
+}: {
+  stats: TeamStats[];
+  homeId: number;
+}) {
+  const home = stats.find((s) => s.team.id === homeId) ?? stats[0];
+  const away =
+    stats.find((s) => s.team.id !== home?.team.id) ?? stats[1] ?? stats[0];
+  if (!home || !away) return null;
+
+  const labels = new Map<string, true>();
+  for (const s of home.statistics ?? []) labels.set(statLabel(s), true);
+  for (const s of away.statistics ?? []) labels.set(statLabel(s), true);
+
+  const preferred = [
+    "Ball Possession",
+    "Possession",
+    "Total Shots",
+    "Shots",
+    "Shots on Goal",
+    "Shots on Target",
+    "Corner Kicks",
+    "Corners",
+    "Fouls",
+    "Yellow Cards",
+    "Red Cards",
+    "Offsides",
+    "Passes",
+    "Pass Accuracy"
+  ];
+
+  const ordered = [
+    ...preferred.filter((p) => labels.has(p)),
+    ...Array.from(labels.keys()).filter((l) => !preferred.includes(l))
+  ].slice(0, 12);
+
+  const val = (side: TeamStats, label: string) => {
+    const item = (side.statistics ?? []).find((s) => statLabel(s) === label);
+    return item?.value ?? 0;
+  };
+
+  return (
+    <section className="match-detail__stats">
+      <h2 className="matchday__label">Statistics</h2>
+      <ul className="stats-list">
+        {ordered.map((label) => {
+          const hv = toNum(val(home, label));
+          const av = toNum(val(away, label));
+          const total = hv + av || 1;
+          const hPct = Math.round((hv / total) * 100);
+          const aPct = 100 - hPct;
+          return (
+            <li className="stats-row" key={label}>
+              <div className="stats-row__values">
+                <span>{val(home, label)}</span>
+                <span className="stats-row__label">{label}</span>
+                <span>{val(away, label)}</span>
+              </div>
+              <div className="stats-row__bar">
+                <div
+                  className="stats-row__fill stats-row__fill--home"
+                  style={{ width: `${hPct}%` }}
+                />
+                <div
+                  className="stats-row__fill stats-row__fill--away"
+                  style={{ width: `${aPct}%` }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+export async function generateMetadata({
+  params
+}: {
+  params: { id: string };
+}): Promise<Metadata> {
+  const id = Number(params.id);
+  if (!Number.isFinite(id)) return { title: "Match" };
+  const match = await getMatchById(id);
+  if (!match) return { title: "Match" };
+  const score = parseScore(match.state.score.current);
+  const title = score
+    ? `${match.homeTeam.name} ${score[0]}–${score[1]} ${match.awayTeam.name}`
+    : `${match.homeTeam.name} vs ${match.awayTeam.name}`;
+  const description = match.round
+    ? `${title} · ${match.round} · UEFA Champions League`
+    : `${title} · UEFA Champions League`;
+  return {
+    title,
+    description,
+    openGraph: { title, description },
+    twitter: { card: "summary", title, description }
+  };
 }
 
 export default async function MatchPage({
@@ -201,9 +317,15 @@ export default async function MatchPage({
   const id = Number(params.id);
   if (!Number.isFinite(id)) notFound();
 
-  const [match, lineups] = await Promise.all([
-    getMatchById(id),
-    getLineups(id)
+  const matchProbe = await getMatchById(id);
+  if (!matchProbe) notFound();
+  const liveProbe = isLive(matchProbe.state.description);
+
+  const [match, lineups, stats, h2h] = await Promise.all([
+    getMatchById(id, liveProbe),
+    getLineups(id),
+    getMatchStatistics(id),
+    getHeadToHead(matchProbe.homeTeam.id, matchProbe.awayTeam.id)
   ]);
   if (!match) notFound();
 
@@ -229,8 +351,13 @@ export default async function MatchPage({
       lineups.homeTeam?.substitutes?.length ||
       lineups.awayTeam?.substitutes?.length);
 
+  const h2hFinished = h2h
+    .filter((m) => isFinished(m.state.description))
+    .slice(0, 5);
+
   return (
-    <div className="page wrap">
+    <div className="page wrap page--with-mobile-nav">
+      <LiveRefresh active={live} />
       <div className="page__heading">
         <h1 className="match-detail__title">Match</h1>
         <Link href="/" className="back-link">
@@ -238,62 +365,45 @@ export default async function MatchPage({
         </Link>
       </div>
 
-      <div className="match-detail">
-        <div
-          className={`match-detail__status ${live ? "match-detail__status--live" : ""}`}
-        >
+      <div className="tv-board">
+        <div className="tv-board__badge">UEFA Champions League</div>
+        {match.round && <div className="tv-board__round">{match.round}</div>}
+        <div className={`tv-board__status ${live ? "tv-board__status--live" : ""}`}>
+          {live && <span className="live-banner__dot" />}
           {status}
-          {match.round && (
-            <span className="match-detail__round">{match.round}</span>
-          )}
         </div>
-
-        <div className="match-detail__scoreboard">
-          <Link href={`/team/${match.homeTeam.id}`} className="match-detail__side">
+        <div className="tv-board__scoreboard">
+          <Link href={`/team/${match.homeTeam.id}`} className="tv-board__side">
             {match.homeTeam.logo && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={match.homeTeam.logo}
-                alt=""
-                className="match-detail__crest"
-              />
+              <img src={match.homeTeam.logo} alt="" className="tv-board__crest" />
             )}
-            <span className="match-detail__name">{match.homeTeam.name}</span>
+            <span className="tv-board__name">{match.homeTeam.name}</span>
           </Link>
-          <div className="match-detail__score">
+          <div className="tv-board__score">
             {score ? (
               <>
                 <span>{score[0]}</span>
-                <span className="match-detail__sep">–</span>
+                <span className="tv-board__sep">–</span>
                 <span>{score[1]}</span>
               </>
             ) : (
-              <span className="match-detail__vs">vs</span>
+              <span className="tv-board__vs">vs</span>
             )}
             {match.state.score.penalties && (
-              <div className="match-detail__pens">
-                Pens {match.state.score.penalties}
-              </div>
+              <div className="tv-board__pens">Pens {match.state.score.penalties}</div>
             )}
           </div>
-          <Link
-            href={`/team/${match.awayTeam.id}`}
-            className="match-detail__side match-detail__side--away"
-          >
+          <Link href={`/team/${match.awayTeam.id}`} className="tv-board__side">
             {match.awayTeam.logo && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={match.awayTeam.logo}
-                alt=""
-                className="match-detail__crest"
-              />
+              <img src={match.awayTeam.logo} alt="" className="tv-board__crest" />
             )}
-            <span className="match-detail__name">{match.awayTeam.name}</span>
+            <span className="tv-board__name">{match.awayTeam.name}</span>
           </Link>
         </div>
-
         {(match.venue?.name || match.referee?.name) && (
-          <div className="match-detail__meta">
+          <div className="tv-board__meta">
             {match.venue?.name && (
               <span>
                 {match.venue.name}
@@ -303,8 +413,14 @@ export default async function MatchPage({
             {match.referee?.name && <span>Ref: {match.referee.name}</span>}
           </div>
         )}
+      </div>
 
-        {showLineups && (
+      <div className="match-detail match-detail--below-tv">
+        {stats && stats.length >= 2 && (
+          <StatsBlock stats={stats} homeId={match.homeTeam.id} />
+        )}
+
+        {showLineups && lineups && (
           <section className="match-detail__lineups">
             <h2 className="matchday__label">Lineups</h2>
             <div className="lineups-grid">
@@ -362,6 +478,15 @@ export default async function MatchPage({
                 );
               })}
             </ul>
+          </section>
+        )}
+
+        {h2hFinished.length > 0 && (
+          <section className="match-detail__h2h">
+            <h2 className="matchday__label">Head to head</h2>
+            {h2hFinished.map((m: Match) => (
+              <MatchRow key={m.id} match={m} />
+            ))}
           </section>
         )}
       </div>
