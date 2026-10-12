@@ -13,6 +13,7 @@ const BASE_URL =
 
 const REVALIDATE_MATCHES = 6 * 60 * 60; // 6 hours
 const REVALIDATE_MATCH = 60 * 60;
+const REVALIDATE_LINEUPS = 24 * 60 * 60; // 24 hours — lineups don't change after the match
 const REVALIDATE_STANDINGS = 24 * 60 * 60;
 const REVALIDATE_HIGHLIGHTS = 12 * 60 * 60;
 const REVALIDATE_TEAM = 24 * 60 * 60;
@@ -99,13 +100,6 @@ export function addDaysUTC(base: Date, days: number): Date {
   return d;
 }
 
-function daysBetween(a: string, b: string): number {
-  const ms =
-    new Date(b + "T00:00:00.000Z").getTime() -
-    new Date(a + "T00:00:00.000Z").getTime();
-  return Math.round(ms / (24 * 60 * 60 * 1000));
-}
-
 type Team = {
   id: number;
   logo?: string;
@@ -155,6 +149,28 @@ export type Highlight = {
   match?: { id?: number };
 };
 
+export type LineupPlayer = {
+  id?: number;
+  name: string;
+  number: number;
+  position: string;
+};
+
+export type LineupSide = {
+  id: number;
+  logo?: string;
+  name: string;
+  formation?: string;
+  /** Rows of players; first row is always the goalkeeper. */
+  initialLineup?: LineupPlayer[][];
+  substitutes?: LineupPlayer[];
+};
+
+export type MatchLineups = {
+  homeTeam?: LineupSide;
+  awayTeam?: LineupSide;
+};
+
 export async function getMatches(date?: string): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const day = date ?? new Date().toISOString().slice(0, 10);
@@ -173,17 +189,15 @@ export async function getMatches(date?: string): Promise<Match[]> {
 
 /**
  * Last completed + next upcoming league-phase matchday clusters only.
- * Avoids scanning empty midweek days and keeps free-tier usage low.
  */
 export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const today = new Date().toISOString().slice(0, 10);
 
-  const past = UCL_MATCHDAY_DATES.filter((d) => d <= today).slice(-4); // last ~cluster
+  const past = UCL_MATCHDAY_DATES.filter((d) => d <= today).slice(-4);
   const upcoming = UCL_MATCHDAY_DATES.filter((d) => d > today).slice(0, 4);
   const dates = Array.from(new Set([...past, ...upcoming]));
 
-  // Always include today-ish window in case schedule drifts
   const start = new Date(today + "T00:00:00.000Z");
   for (let i = -1; i <= 2; i++) {
     dates.push(isoDateUTC(addDaysUTC(start, i)));
@@ -202,7 +216,6 @@ export async function getLeaguePhaseMatches(): Promise<Match[]> {
   );
 }
 
-/** @deprecated Prefer getLeaguePhaseMatches — kept for results page overlap. */
 export async function getMatchesWindow(
   startDate: string,
   days = 3,
@@ -242,6 +255,21 @@ export async function getMatchById(id: number): Promise<Match | null> {
       return (data as { data?: Match }).data ?? null;
     }
     return data as Match;
+  } catch {
+    return null;
+  }
+}
+
+/** Starting XI + bench for one match. Returns null if unavailable. */
+export async function getLineups(matchId: number): Promise<MatchLineups | null> {
+  try {
+    const data = await get<MatchLineups>(
+      `/lineups/${matchId}`,
+      {},
+      REVALIDATE_LINEUPS
+    );
+    if (!data?.homeTeam && !data?.awayTeam) return null;
+    return data;
   } catch {
     return null;
   }
@@ -376,6 +404,3 @@ export async function getStandings(): Promise<Standings | null> {
   );
   return data;
 }
-
-// silence unused helper warning in some builds
-void daysBetween;

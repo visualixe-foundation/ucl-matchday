@@ -2,14 +2,17 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   getMatchById,
+  getLineups,
   isLive,
   isFinished,
   parseScore,
-  type MatchEvent
+  type MatchEvent,
+  type LineupSide,
+  type LineupPlayer
 } from "@/lib/highlightly";
 import { formatKickoffDateTime } from "@/lib/time";
 
-export const revalidate = 60;
+export const revalidate = 3600;
 
 function eventTeamName(e: MatchEvent): string {
   if (typeof e.team === "string") return e.team;
@@ -41,7 +44,6 @@ function namesMatch(a: string, b: string): boolean {
   return false;
 }
 
-/** true = home (left), false = away (right), null = unknown */
 function isHomeEvent(
   e: MatchEvent,
   homeName: string,
@@ -68,13 +70,11 @@ function eventTypeKey(e: MatchEvent): string {
   return (e.type || e.description || "").toLowerCase().trim();
 }
 
-/** Renders icon + player text for one event. */
 function EventContent({ e }: { e: MatchEvent }) {
   const type = eventTypeKey(e);
   const player = eventPlayerName(e);
   const on = e.substituted?.trim() || null;
 
-  // Goal → ball + player (no "Goal" word)
   if (type === "goal" || type.includes("goal")) {
     return (
       <span className="event-timeline__text">
@@ -89,8 +89,6 @@ function EventContent({ e }: { e: MatchEvent }) {
     );
   }
 
-  // Substitution → player off (red ↓) / player on (green ↑)
-  // API: player = going off, substituted = coming on
   if (type === "substitution" || type.includes("substitut")) {
     return (
       <span className="event-timeline__text event-timeline__text--sub">
@@ -115,7 +113,6 @@ function EventContent({ e }: { e: MatchEvent }) {
     );
   }
 
-  // Yellow / Red card
   if (type.includes("yellow")) {
     return (
       <span className="event-timeline__text">
@@ -137,12 +134,62 @@ function EventContent({ e }: { e: MatchEvent }) {
     );
   }
 
-  // Fallback
   const label = e.type?.trim() || e.description?.trim() || "Event";
   return (
     <span className="event-timeline__text">
       {player ? `${label} · ${player}` : label}
     </span>
+  );
+}
+
+function playerLabel(p: LineupPlayer): string {
+  const num = p.number != null ? `${p.number} ` : "";
+  return `${num}${p.name}`;
+}
+
+function LineupBlock({ side, label }: { side: LineupSide; label: string }) {
+  const rows = side.initialLineup ?? [];
+  const bench = side.substitutes ?? [];
+  const hasXi = rows.some((r) => r.length > 0);
+
+  return (
+    <div className="lineup-side">
+      <div className="lineup-side__header">
+        <span className="lineup-side__name">{side.name || label}</span>
+        {side.formation && (
+          <span className="lineup-side__formation">{side.formation}</span>
+        )}
+      </div>
+
+      {hasXi && (
+        <div className="lineup-xi">
+          {rows.map((row, ri) => (
+            <ul className="lineup-xi__row" key={ri}>
+              {row.map((p, pi) => (
+                <li className="lineup-xi__player" key={`${ri}-${pi}-${p.name}`}>
+                  {playerLabel(p)}
+                </li>
+              ))}
+            </ul>
+          ))}
+        </div>
+      )}
+
+      {bench.length > 0 && (
+        <div className="lineup-bench">
+          <div className="lineup-bench__label">Bench</div>
+          <ul className="lineup-bench__list">
+            {bench.map((p, i) => (
+              <li key={`b-${i}-${p.name}`}>{playerLabel(p)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!hasXi && bench.length === 0 && (
+        <p className="lineup-empty">Lineup not available</p>
+      )}
+    </div>
   );
 }
 
@@ -154,7 +201,10 @@ export default async function MatchPage({
   const id = Number(params.id);
   if (!Number.isFinite(id)) notFound();
 
-  const match = await getMatchById(id);
+  const [match, lineups] = await Promise.all([
+    getMatchById(id),
+    getLineups(id)
+  ]);
   if (!match) notFound();
 
   const score = parseScore(match.state.score.current);
@@ -172,6 +222,13 @@ export default async function MatchPage({
     (a, b) => eventMinuteSortKey(a) - eventMinuteSortKey(b)
   );
 
+  const showLineups =
+    lineups &&
+    (lineups.homeTeam?.initialLineup?.length ||
+      lineups.awayTeam?.initialLineup?.length ||
+      lineups.homeTeam?.substitutes?.length ||
+      lineups.awayTeam?.substitutes?.length);
+
   return (
     <div className="page wrap">
       <div className="page__heading">
@@ -182,16 +239,24 @@ export default async function MatchPage({
       </div>
 
       <div className="match-detail">
-        <div className={`match-detail__status ${live ? "match-detail__status--live" : ""}`}>
+        <div
+          className={`match-detail__status ${live ? "match-detail__status--live" : ""}`}
+        >
           {status}
-          {match.round && <span className="match-detail__round">{match.round}</span>}
+          {match.round && (
+            <span className="match-detail__round">{match.round}</span>
+          )}
         </div>
 
         <div className="match-detail__scoreboard">
           <Link href={`/team/${match.homeTeam.id}`} className="match-detail__side">
             {match.homeTeam.logo && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={match.homeTeam.logo} alt="" className="match-detail__crest" />
+              <img
+                src={match.homeTeam.logo}
+                alt=""
+                className="match-detail__crest"
+              />
             )}
             <span className="match-detail__name">{match.homeTeam.name}</span>
           </Link>
@@ -206,13 +271,22 @@ export default async function MatchPage({
               <span className="match-detail__vs">vs</span>
             )}
             {match.state.score.penalties && (
-              <div className="match-detail__pens">Pens {match.state.score.penalties}</div>
+              <div className="match-detail__pens">
+                Pens {match.state.score.penalties}
+              </div>
             )}
           </div>
-          <Link href={`/team/${match.awayTeam.id}`} className="match-detail__side match-detail__side--away">
+          <Link
+            href={`/team/${match.awayTeam.id}`}
+            className="match-detail__side match-detail__side--away"
+          >
             {match.awayTeam.logo && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={match.awayTeam.logo} alt="" className="match-detail__crest" />
+              <img
+                src={match.awayTeam.logo}
+                alt=""
+                className="match-detail__crest"
+              />
             )}
             <span className="match-detail__name">{match.awayTeam.name}</span>
           </Link>
@@ -230,17 +304,39 @@ export default async function MatchPage({
           </div>
         )}
 
+        {showLineups && (
+          <section className="match-detail__lineups">
+            <h2 className="matchday__label">Lineups</h2>
+            <div className="lineups-grid">
+              {lineups.homeTeam && (
+                <LineupBlock side={lineups.homeTeam} label={match.homeTeam.name} />
+              )}
+              {lineups.awayTeam && (
+                <LineupBlock side={lineups.awayTeam} label={match.awayTeam.name} />
+              )}
+            </div>
+          </section>
+        )}
+
         {events.length > 0 && (
           <section className="match-detail__events">
             <h2 className="matchday__label">Events</h2>
             <div className="event-timeline__legend">
-              <span className="event-timeline__legend-home">{match.homeTeam.name}</span>
+              <span className="event-timeline__legend-home">
+                {match.homeTeam.name}
+              </span>
               <span className="event-timeline__legend-mid">&apos;</span>
-              <span className="event-timeline__legend-away">{match.awayTeam.name}</span>
+              <span className="event-timeline__legend-away">
+                {match.awayTeam.name}
+              </span>
             </div>
             <ul className="event-timeline">
               {events.map((e, i) => {
-                const side = isHomeEvent(e, match.homeTeam.name, match.awayTeam.name);
+                const side = isHomeEvent(
+                  e,
+                  match.homeTeam.name,
+                  match.awayTeam.name
+                );
                 const sideClass =
                   side === true
                     ? "event-timeline__row--home"
