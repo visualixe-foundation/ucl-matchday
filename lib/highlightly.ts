@@ -210,29 +210,50 @@ export async function getMatches(date?: string): Promise<Match[]> {
   return Array.isArray(data) ? data : data.data ?? [];
 }
 
+/** Fetch only last + next matchday clusters (minimal API usage). */
 export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const today = new Date().toISOString().slice(0, 10);
   const { last, next } = getLastAndNextClusters(today);
-  const dates = [
-    ...(last?.dates ?? []),
-    ...(next?.dates ?? []),
-    ...UCL_MATCHDAY_DATES.filter((d) => d <= today).slice(-3)
-  ];
-  const start = new Date(today + "T00:00:00.000Z");
-  for (let i = -1; i <= 2; i++) dates.push(isoDateUTC(addDaysUTC(start, i)));
-  const unique = Array.from(new Set(dates)).sort();
+  // Only last + next cluster — avoid extra day windows that burn quota
+  const dates = Array.from(
+    new Set([...(last?.dates ?? []), ...(next?.dates ?? [])])
+  ).sort();
+
+  if (!dates.length) return [];
 
   const results = await Promise.all(
-    unique.map((d) => getMatches(d).catch(() => [] as Match[]))
+    dates.map(async (d) => {
+      try {
+        return { ok: true as const, matches: await getMatches(d) };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: msg, matches: [] as Match[] };
+      }
+    })
   );
+
+  const failures = results.filter((r) => !r.ok);
   const byId = new Map<number, Match>();
   for (const batch of results) {
-    for (const m of batch) byId.set(m.id, m);
+    for (const m of batch.matches) byId.set(m.id, m);
   }
-  return Array.from(byId.values()).sort(
+  const matches = Array.from(byId.values()).sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+
+  // If every day failed and we have zero matches, surface quota / API error
+  if (matches.length === 0 && failures.length === dates.length) {
+    const sample = failures[0]?.error ?? "";
+    if (sample.includes("429") || /daily request|rate limit/i.test(sample)) {
+      throw new Error(
+        "Highlightly 429: daily request limit reached. Resets around 03:00 EAT."
+      );
+    }
+    throw new Error(sample || "Failed to load fixtures from Highlightly.");
+  }
+
+  return matches;
 }
 
 export async function getMatchById(

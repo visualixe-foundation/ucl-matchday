@@ -87,12 +87,39 @@ export default async function HomePage() {
       {errorMessage && (
         <div className="empty-state">
           <strong>
-            {quotaHit ? "API daily limit reached" : "Couldn&apos;t load fixtures"}
+            {quotaHit ? "API daily limit reached" : "Couldn't load fixtures"}
           </strong>
           {quotaHit
-            ? "Highlightly free tier is exhausted for today. Data returns after the daily reset (around 03:00 EAT)."
+            ? "Highlightly free tier is exhausted for today. Matchday 1 scores and table return after the daily reset (around 03:00 EAT)."
             : errorMessage}
         </div>
+      )}
+
+      {/* Last matchday first so the page is never blank between weeks */}
+      {!errorMessage && last && (
+        <section className="matchday">
+          <div className="matchday__label">
+            Last results · {last.label}
+            <span className="matchday__range">
+              {" "}
+              · {formatMatchdayRange(last.dates)}
+            </span>
+          </div>
+          {lastMatches.length === 0 ? (
+            <p className="section-note">
+              Scores for this matchday are not available right now.
+            </p>
+          ) : (
+            byDay(lastMatches).map(({ day, matches: dayMatches }) => (
+              <div key={day}>
+                <div className="matchday__sublabel">{formatDayLabelEAT(day)}</div>
+                {dayMatches.map((m) => (
+                  <MatchRow key={m.id} match={m} />
+                ))}
+              </div>
+            ))
+          )}
+        </section>
       )}
 
       {!errorMessage && next && (
@@ -119,27 +146,7 @@ export default async function HomePage() {
         </section>
       )}
 
-      {!errorMessage && last && lastMatches.length > 0 && (
-        <section className="matchday">
-          <div className="matchday__label">
-            Last results · {last.label}
-            <span className="matchday__range">
-              {" "}
-              · {formatMatchdayRange(last.dates)}
-            </span>
-          </div>
-          {byDay(lastMatches).map(({ day, matches: dayMatches }) => (
-            <div key={day}>
-              <div className="matchday__sublabel">{formatDayLabelEAT(day)}</div>
-              {dayMatches.map((m) => (
-                <MatchRow key={m.id} match={m} />
-              ))}
-            </div>
-          ))}
-        </section>
-      )}
-
-      {!errorMessage && !next && matches.length === 0 && (
+      {!errorMessage && !next && !last && matches.length === 0 && (
         <div className="empty-state">
           <strong>Between matchdays</strong>
           Next league-phase fixtures load when scheduled. Check standings or SuperSport for
