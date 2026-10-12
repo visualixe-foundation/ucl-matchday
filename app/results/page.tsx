@@ -8,7 +8,7 @@ import {
 import { dayKeyEAT, formatDayLabelEAT } from "@/lib/time";
 import MatchRow from "@/app/components/MatchRow";
 
-export const revalidate = 21600; // 6 hours
+export const revalidate = 21600;
 
 const SUPERSPORT_UCL =
   "https://www.supersport.com/football/uefa-champions-league";
@@ -46,11 +46,10 @@ export default async function ResultsPage() {
     acc[key].push(m);
     return acc;
   }, {});
-  // Results: newest day first is fine; within a matchday cluster still Tue→Thu via day key sort if reversed groups
   const dayKeys = Object.keys(byDay).sort();
 
   return (
-    <div className="page wrap">
+    <div className="page wrap page--with-mobile-nav">
       <div className="page__heading">
         <h1>Highlights</h1>
         <a
