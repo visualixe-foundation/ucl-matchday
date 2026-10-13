@@ -10,13 +10,14 @@ const BASE_URL =
     ? "https://football-highlights-api.p.rapidapi.com"
     : "https://soccer.highlightly.net";
 
-const REVALIDATE_MATCHES = 6 * 60 * 60;
+// Shorter on matchdays so scores aren't stuck; still under free-tier budget
+const REVALIDATE_MATCHES = 5 * 60;
 const REVALIDATE_MATCH = 60 * 60;
-const REVALIDATE_MATCH_LIVE = 60; // 1 min when live
+const REVALIDATE_MATCH_LIVE = 60;
 const REVALIDATE_LINEUPS = 24 * 60 * 60;
 const REVALIDATE_STATS = 6 * 60 * 60;
 const REVALIDATE_H2H = 24 * 60 * 60;
-const REVALIDATE_STANDINGS = 24 * 60 * 60;
+const REVALIDATE_STANDINGS = 60 * 60;
 const REVALIDATE_HIGHLIGHTS = 12 * 60 * 60;
 const REVALIDATE_TEAM = 24 * 60 * 60;
 
@@ -31,8 +32,6 @@ export const UCL_MATCHDAY_CLUSTERS: { label: string; dates: string[] }[] = [
   { label: "Matchday 7", dates: ["2027-01-19", "2027-01-20"] },
   { label: "Matchday 8", dates: ["2027-01-27"] }
 ];
-
-const UCL_MATCHDAY_DATES = UCL_MATCHDAY_CLUSTERS.flatMap((c) => c.dates);
 
 function headers(): HeadersInit {
   if (!API_KEY) {
@@ -62,6 +61,7 @@ async function get<T>(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
+    // 429 / 5xx must not stick in the Data Cache for hours
     throw new Error(`Highlightly ${path} failed: ${res.status} ${body}`);
   }
   return res.json();
@@ -72,16 +72,6 @@ function currentSeason(): number {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
   return month >= 7 ? year : year - 1;
-}
-
-function isoDateUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-export function addDaysUTC(base: Date, days: number): Date {
-  const d = new Date(base);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d;
 }
 
 export function formatMatchdayRange(dates: string[]): string {
@@ -105,7 +95,6 @@ export function getLastAndNextClusters(today = new Date().toISOString().slice(0,
     else if (!next && c.dates[0] >= today) next = c;
     else if (!next && c.dates.some((d) => d >= today)) next = c;
   }
-  // If today is inside a cluster, treat it as current/next
   const current = UCL_MATCHDAY_CLUSTERS.find((c) =>
     c.dates.some((d) => d === today)
   );
@@ -215,7 +204,6 @@ export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const today = new Date().toISOString().slice(0, 10);
   const { last, next } = getLastAndNextClusters(today);
-  // Only last + next cluster — avoid extra day windows that burn quota
   const dates = Array.from(
     new Set([...(last?.dates ?? []), ...(next?.dates ?? [])])
   ).sort();
@@ -242,7 +230,6 @@ export async function getLeaguePhaseMatches(): Promise<Match[]> {
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
 
-  // If every day failed and we have zero matches, surface quota / API error
   if (matches.length === 0 && failures.length === dates.length) {
     const sample = failures[0]?.error ?? "";
     if (sample.includes("429") || /daily request|rate limit/i.test(sample)) {
@@ -287,7 +274,6 @@ export async function getLineups(matchId: number): Promise<MatchLineups | null> 
   }
 }
 
-/** Team match stats — array of { team, statistics[] }. */
 export async function getMatchStatistics(
   matchId: number
 ): Promise<TeamStats[] | null> {
@@ -437,7 +423,6 @@ export function sortStandings(rows: StandingRow[]): StandingRow[] {
   });
 }
 
-/** UCL league phase: 1–8 auto R16, 9–24 playoff, 25–36 out. */
 export function qualificationZone(position: number): "r16" | "playoff" | "out" | null {
   if (position <= 0) return null;
   if (position <= 8) return "r16";

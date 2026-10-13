@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from "next/cache";
 import {
   getStandings,
   sortStandings,
@@ -5,7 +6,7 @@ import {
   type StandingRow
 } from "@/lib/highlightly";
 
-export const revalidate = 86400;
+export const revalidate = 3600;
 
 function gd(row: StandingRow) {
   return row.total.scoredGoals - row.total.receivedGoals;
@@ -34,6 +35,7 @@ export default async function StandingsPage() {
       }));
     }
   } catch (err) {
+    noStore();
     errorMessage = err instanceof Error ? err.message : "Failed to load standings.";
   }
 
@@ -64,7 +66,7 @@ export default async function StandingsPage() {
       {errorMessage && (
         <div className="empty-state">
           <strong>
-            {quotaHit ? "API daily limit reached" : "Couldn&apos;t load standings"}
+            {quotaHit ? "API daily limit reached" : "Couldn't load standings"}
           </strong>
           {quotaHit
             ? "Highlightly free tier is exhausted for today. Table returns after the daily reset (around 03:00 EAT)."
