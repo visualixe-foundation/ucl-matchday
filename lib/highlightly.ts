@@ -10,7 +10,6 @@ const BASE_URL =
     ? "https://football-highlights-api.p.rapidapi.com"
     : "https://soccer.highlightly.net";
 
-// Shorter on matchdays so scores aren't stuck; still under free-tier budget
 const REVALIDATE_MATCHES = 5 * 60;
 const REVALIDATE_MATCH = 60 * 60;
 const REVALIDATE_MATCH_LIVE = 60;
@@ -61,7 +60,6 @@ async function get<T>(
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    // 429 / 5xx must not stick in the Data Cache for hours
     throw new Error(`Highlightly ${path} failed: ${res.status} ${body}`);
   }
   return res.json();
@@ -199,13 +197,24 @@ export async function getMatches(date?: string): Promise<Match[]> {
   return Array.isArray(data) ? data : data.data ?? [];
 }
 
-/** Fetch only last + next matchday clusters (minimal API usage). */
+/**
+ * Fetch matchday clusters with minimal API usage.
+ * On a matchday (today in next cluster): only that cluster (usually 2 days).
+ * Between matchdays: last + next.
+ */
 export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
   const today = new Date().toISOString().slice(0, 10);
   const { last, next } = getLastAndNextClusters(today);
+  const onMatchday = Boolean(next?.dates.includes(today));
+
+  // Prefer current matchday only while games are on — saves ~3 requests/day
   const dates = Array.from(
-    new Set([...(last?.dates ?? []), ...(next?.dates ?? [])])
+    new Set(
+      onMatchday
+        ? [...(next?.dates ?? [])]
+        : [...(last?.dates ?? []), ...(next?.dates ?? [])]
+    )
   ).sort();
 
   if (!dates.length) return [];
