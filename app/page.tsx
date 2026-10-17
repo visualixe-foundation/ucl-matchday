@@ -1,4 +1,3 @@
-import { unstable_noStore as noStore } from "next/cache";
 import {
   getLeaguePhaseMatches,
   getLastAndNextClusters,
@@ -13,8 +12,9 @@ import KickoffCountdown from "./components/KickoffCountdown";
 import MatchRow from "./components/MatchRow";
 import LiveRefresh from "./components/LiveRefresh";
 
-// Matchdays need fresher data; also prevents a 6h-stuck "API limit" page
-export const revalidate = 300;
+// Long cache so bots / ISR do not re-hit Highlightly every few minutes.
+// On 429 this also freezes the error page instead of burning more quota.
+export const revalidate = 21600; // 6 hours
 
 function splitLastNext(matches: Match[], today: string) {
   const { last, next } = getLastAndNextClusters(today);
@@ -39,8 +39,8 @@ export default async function HomePage() {
   try {
     matches = await getLeaguePhaseMatches();
   } catch (err) {
-    // Do not ISR-cache error/quota pages for hours
-    noStore();
+    // Do NOT call noStore() here — that forced every visitor/bot to hit the API
+    // again and kept the free tier at 100%+ even when nobody used the site.
     errorMessage = err instanceof Error ? err.message : "Failed to load fixtures.";
   }
 
@@ -94,12 +94,11 @@ export default async function HomePage() {
             {quotaHit ? "API daily limit reached" : "Couldn't load fixtures"}
           </strong>
           {quotaHit
-            ? "Highlightly free tier is exhausted for today. Scores return after the daily reset (around 03:00 EAT). Hard-refresh after that."
+            ? "Highlightly free tier is exhausted for today. Scores return after the daily reset (around 03:00 EAT). The site now caches this message so it does not keep spending your quota."
             : errorMessage}
         </div>
       )}
 
-      {/* Last matchday first so the page is never blank between weeks */}
       {!errorMessage && last && (
         <section className="matchday">
           <div className="matchday__label">

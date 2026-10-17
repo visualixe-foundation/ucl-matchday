@@ -1,4 +1,3 @@
-import { unstable_noStore as noStore } from "next/cache";
 import {
   getStandings,
   sortStandings,
@@ -6,7 +5,8 @@ import {
   type StandingRow
 } from "@/lib/highlightly";
 
-export const revalidate = 3600;
+// Cache hard — standings barely change between matchdays
+export const revalidate = 86400; // 24 hours
 
 function gd(row: StandingRow) {
   return row.total.scoredGoals - row.total.receivedGoals;
@@ -35,7 +35,7 @@ export default async function StandingsPage() {
       }));
     }
   } catch (err) {
-    noStore();
+    // Cache error page — do not noStore (that re-hit the API on every visit)
     errorMessage = err instanceof Error ? err.message : "Failed to load standings.";
   }
 

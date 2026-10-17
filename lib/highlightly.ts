@@ -1,5 +1,5 @@
 // Thin wrapper around the Highlightly Football API (UEFA Champions League).
-// Free tier = 100 req/day — cache aggressively; prefer known matchday dates.
+// Free tier = 100 req/day — cache VERY aggressively; bots must not burn the quota.
 
 const SOURCE = process.env.HIGHLIGHTLY_SOURCE === "rapidapi" ? "rapidapi" : "direct";
 const API_KEY = process.env.HIGHLIGHTLY_API_KEY;
@@ -10,14 +10,15 @@ const BASE_URL =
     ? "https://football-highlights-api.p.rapidapi.com"
     : "https://soccer.highlightly.net";
 
-const REVALIDATE_MATCHES = 5 * 60;
-const REVALIDATE_MATCH = 60 * 60;
+// Long TTLs: one successful fetch should serve many visitors for hours.
+const REVALIDATE_MATCHES = 12 * 60 * 60; // 12h
+const REVALIDATE_MATCH = 6 * 60 * 60;
 const REVALIDATE_MATCH_LIVE = 60;
 const REVALIDATE_LINEUPS = 24 * 60 * 60;
-const REVALIDATE_STATS = 6 * 60 * 60;
+const REVALIDATE_STATS = 12 * 60 * 60;
 const REVALIDATE_H2H = 24 * 60 * 60;
-const REVALIDATE_STANDINGS = 60 * 60;
-const REVALIDATE_HIGHLIGHTS = 12 * 60 * 60;
+const REVALIDATE_STANDINGS = 24 * 60 * 60;
+const REVALIDATE_HIGHLIGHTS = 24 * 60 * 60;
 const REVALIDATE_TEAM = 24 * 60 * 60;
 
 /** 2026/27 UCL league-phase matchday date clusters. */
@@ -199,8 +200,7 @@ export async function getMatches(date?: string): Promise<Match[]> {
 
 /**
  * Fetch matchday clusters with minimal API usage.
- * On a matchday (today in next cluster): only that cluster (usually 2 days).
- * Between matchdays: last + next.
+ * On a matchday: only that cluster. Between matchdays: last + next.
  */
 export async function getLeaguePhaseMatches(): Promise<Match[]> {
   if (!LEAGUE_ID) return [];
@@ -208,7 +208,6 @@ export async function getLeaguePhaseMatches(): Promise<Match[]> {
   const { last, next } = getLastAndNextClusters(today);
   const onMatchday = Boolean(next?.dates.includes(today));
 
-  // Prefer current matchday only while games are on — saves ~3 requests/day
   const dates = Array.from(
     new Set(
       onMatchday
